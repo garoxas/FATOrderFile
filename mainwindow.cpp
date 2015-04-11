@@ -397,112 +397,205 @@ void MainWindow::on_loadButton_clicked()
 void MainWindow::on_saveButton_clicked()
 {
     if (QMessageBox::warning(this, "Warning", "Writing directly to disk is a dangerous operation.\nDo you wish to continue?", QMessageBox::Ok, QMessageBox::Cancel) == QMessageBox::Ok) {
-        QFile finput(selectedDrive), foutput("output");
-        if (!finput.open(QIODevice::ReadOnly)) {
+        QFile diskin(selectedDrive), filein("input"), fileout("output");
+        if (!diskin.open(QIODevice::ReadOnly)) {
             QMessageBox::critical(this, "Error", QString("Cannot open disk: %1").arg(selectedDrive.remove(QRegExp("[\\/.]+"))), QMessageBox::Ok);
         }
-        if (!foutput.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
-            QMessageBox::critical(this, "Error", QString("Cannot open file: %1").arg("output"), QMessageBox::Ok);
+        if (!filein.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+            QMessageBox::critical(this, "Error", QString("Cannot open file: %1").arg("input"), QMessageBox::Ok);
         }
 
-        if (finput.isOpen() && foutput.isOpen()) {
-            QProgressDialog progress("Saving", "Cancel", 0, ui->treeWidget->topLevelItemCount(), this);
-            progress.setValue(0);
-            progress.show();
+        QProgressDialog progress("Saving", "Cancel", 0, 0, this);
+        progress.setValue(0);
+        progress.show();
 
-            qApp->processEvents();
+        qApp->processEvents();
 
-            quint8 buffer[0x20];
+        quint8 buffer[0x100];
 
-            int i = 0;
-            for (; i < ui->treeWidget->topLevelItemCount(); i++) {
+        if (diskin.isOpen() && filein.isOpen()) {
+            qDebug("Record Entry: %08x - %08x", first_sector, last_sector);
+
+            if (!diskin.seek(first_sector)) {
+                while (diskin.pos() < first_sector) {
+                    quint8 data[0x20];
+                    diskin.read((char *) data, 0x20);
+                }
+            }
+
+            while (diskin.read((char *) buffer, 0x20)) {
                 if (progress.wasCanceled()) {
-                    foutput.resize(0);
+                    filein.resize(0);
 
                     break;
                 }
 
-                progress.setValue(i);
+                filein.write((char *) buffer, 0x20);
 
-                qApp->processEvents();
-
-                QTreeWidgetItem *item = ui->treeWidget->topLevelItem(i);
-
-                qint64 rec_offset = item->data(0, Qt::UserRole).toLongLong();
-                qint64 next_offset = item->data(0, Qt::UserRole + 1).toLongLong();
-
-                qDebug("Offset: %08x - %08x: %s", rec_offset, next_offset, item->text(0).toStdString().c_str());
-
-                if (!finput.seek(rec_offset)) {
-                    while (finput.pos() < rec_offset) {
-                        quint8 data[0x20];
-                        finput.read((char *) data, 0x20);
-                    }
+                if (diskin.pos() >= last_sector) {
+                    break;
                 }
+            }
 
-                while (finput.read((char *) buffer, 0x20)) {
-                    foutput.write((char *) buffer, 0x20);
+            diskin.close();
+            filein.close();
 
-                    if (finput.pos() >= next_offset) {
+            if (!filein.open(QIODevice::ReadOnly)) {
+                QMessageBox::critical(this, "Error", QString("Cannot open file: %1").arg("input"), QMessageBox::Ok);
+            }
+            if (!fileout.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+                QMessageBox::critical(this, "Error", QString("Cannot open file: %1").arg("output"), QMessageBox::Ok);
+            }
+
+            if (filein.isOpen() && fileout.isOpen()) {
+                progress.setMaximum(ui->treeWidget->topLevelItemCount());
+
+                int i = 0;
+                for (; i < ui->treeWidget->topLevelItemCount(); i++) {
+                    if (progress.wasCanceled()) {
+                        fileout.resize(0);
+
                         break;
                     }
+
+                    progress.setValue(i);
+
+                    qApp->processEvents();
+
+                    QTreeWidgetItem *item = ui->treeWidget->topLevelItem(i);
+
+                    qint64 rec_offset = item->data(0, Qt::UserRole).toLongLong() - first_sector;
+                    qint64 next_offset = item->data(0, Qt::UserRole + 1).toLongLong() - first_sector;
+
+                    qDebug("Offset: %08x - %08x: %s", rec_offset, next_offset, item->text(0).toStdString().c_str());
+
+                    if (!filein.seek(rec_offset)) {
+                        while (filein.pos() < rec_offset) {
+                            quint8 data[0x20];
+                            filein.read((char *) data, 0x20);
+                        }
+                    }
+
+                    while (filein.read((char *) buffer, 0x20)) {
+                        if (progress.wasCanceled()) {
+                            fileout.resize(0);
+
+                            break;
+                        }
+
+                        fileout.write((char *) buffer, 0x20);
+
+                        if (filein.pos() >= next_offset) {
+                            break;
+                        }
+                    }
+                }
+
+                progress.setValue(i);
+
+                memset(buffer, 0, sizeof(buffer));
+
+                while (fileout.pos() < last_sector - first_sector) {
+                    fileout.write((char *) buffer, 0x20);
+                }
+
+                filein.close();
+                fileout.close();
+
+                if (!fileout.open(QIODevice::ReadOnly)) {
+                    QMessageBox::critical(this, "Error", QString("Cannot open file: %1").arg("output"), QMessageBox::Ok);
+                }
+                if (!diskin.open(QIODevice::ReadWrite)) {
+                    QMessageBox::critical(this, "Error", QString("Cannot open disk: %1").arg(selectedDrive.remove(QRegExp("[\\/.]+"))), QMessageBox::Ok);
+                }
+
+                if (fileout.isOpen() && diskin.isOpen()) {
+                    progress.setMaximum(0);
+                    progress.setValue(0);
+
+                    if (!diskin.seek(first_sector)) {
+                        while (diskin.pos() < first_sector) {
+                            quint8 data[0x20];
+                            diskin.read((char *) data, 0x20);
+                        }
+                    }
+
+                    if (diskin.pos() != first_sector) {
+                        QMessageBox::critical(this, "Error", "File operation error", QMessageBox::Ok);
+                    }
+                    else {
+                        while (fileout.read((char *) buffer, 0x20)) {
+                            if (progress.wasCanceled()) {
+                                break;
+                            }
+
+                            if (diskin.write((char *) buffer, 0x20) > -1) {
+                                qDebug("Write to Disk: %08x", diskin.pos());
+                            }
+                            else {
+                                qDebug("Write error: (%d) %s", diskin.error(), diskin.errorString().toStdString().c_str());
+                            }
+
+                            if (diskin.pos() >= last_sector) {
+                                break;
+                            }
+                        }
+                    }
+
+                    fileout.close();
+                    diskin.close();
                 }
             }
-
-            progress.setValue(i);
-
-            memset(buffer, 0, sizeof(buffer));
-
-            while (foutput.pos() < last_sector - first_sector) {
-                foutput.write((char *) buffer, 0x20);
-            }
-
-            finput.close();
-            foutput.close();
         }
     }
 }
 
 void MainWindow::on_upButton_clicked()
 {
-    ui->treeWidget->sortByColumn(-1);
+    QTreeWidget *treeWidget = ui->treeWidget;
+
+    treeWidget->sortByColumn(-1);
+
+    QList<QTreeWidgetItem *> selectedItems = treeWidget->selectedItems();
+    std::sort(selectedItems.begin(), selectedItems.end(), [treeWidget] (QTreeWidgetItem *left, QTreeWidgetItem *right)->bool {
+        return treeWidget->indexOfTopLevelItem(left) < treeWidget->indexOfTopLevelItem(right);
+    });
 
     int top = -1;
-    foreach (QTreeWidgetItem *item, ui->treeWidget->selectedItems()) {
-        int index = ui->treeWidget->indexOfTopLevelItem(item);
+    foreach (QTreeWidgetItem *item, selectedItems) {
+        int index = treeWidget->indexOfTopLevelItem(item);
         if (index > 0 && (top < 0 || index > top + 1)) {
             index--;
-            ui->treeWidget->insertTopLevelItem(index, ui->treeWidget->takeTopLevelItem(index + 1));
+            treeWidget->insertTopLevelItem(index, treeWidget->takeTopLevelItem(index + 1));
         }
         top = index;
 
-        ui->treeWidget->topLevelItem(index)->setSelected(true);
+        treeWidget->topLevelItem(index)->setSelected(true);
     }
 }
 
 void MainWindow::on_downButton_clicked()
 {
-    ui->treeWidget->sortByColumn(-1);
+    QTreeWidget *treeWidget = ui->treeWidget;
+
+    treeWidget->sortByColumn(-1);
+
+    QList<QTreeWidgetItem *> selectedItems = treeWidget->selectedItems();
+    std::sort(selectedItems.begin(), selectedItems.end(), [treeWidget] (QTreeWidgetItem *left, QTreeWidgetItem *right)->bool {
+        return treeWidget->indexOfTopLevelItem(left) > treeWidget->indexOfTopLevelItem(right);
+    });
+
+    int size = treeWidget->topLevelItemCount();
 
     int bottom = -1;
-    QList<QTreeWidgetItem*> reversedItems;
-
-    int size = ui->treeWidget->selectedItems().size();
-    if (size == 0)
-        return;
-    for (int i = size - 1; i > -1; i--) {
-        reversedItems.append(ui->treeWidget->selectedItems().at(i));
-    }
-
-    size = ui->treeWidget->topLevelItemCount();
-    foreach (QTreeWidgetItem *item, reversedItems) {
-        int index = ui->treeWidget->indexOfTopLevelItem(item);
+    foreach (QTreeWidgetItem *item, selectedItems) {
+        int index = treeWidget->indexOfTopLevelItem(item);
         if (index < size - 1 && (bottom < 0 || index < bottom - 1)) {
             index++;
-            ui->treeWidget->insertTopLevelItem(index, ui->treeWidget->takeTopLevelItem(index - 1));
+            treeWidget->insertTopLevelItem(index, treeWidget->takeTopLevelItem(index - 1));
         }
         bottom = index;
 
-        ui->treeWidget->topLevelItem(index)->setSelected(true);
+        treeWidget->topLevelItem(index)->setSelected(true);
     }
 }
