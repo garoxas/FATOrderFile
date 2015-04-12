@@ -13,8 +13,12 @@
 #include <QtMath>
 #include <QMessageBox>
 #include <QProgressDialog>
+#include <QClipboard>
 
 qint64 first_sector = 0, last_sector = 0;
+
+int bytes_per_sector;
+qint64 root_directory_sector;
 
 QString selectedDrive;
 
@@ -56,19 +60,19 @@ struct release {
     ImageType type;
 
     inline bool operator ==(const release other) const {
-        if (filename.toLower() == other.filename.toLower()) {
+        if (other.filename.toLower().startsWith(filename.toLower())) {
             return true;
         }
         QString this_name(name), other_name(other.name);
         this_name.remove(QRegExp("[^a-zA-Z\\d\\s]"));
         other_name.remove(QRegExp("[^a-zA-Z\\d\\s]"));
-        if (this_name.toLower() == other_name.toLower()) {
+        if (other_name.toLower().startsWith(this_name.toLower())) {
             return true;
         }
         QString this_releasename(releasename), other_releasename(other.releasename);
         this_releasename.remove(QRegExp("[^a-zA-Z\\d\\s]"));
         other_releasename.remove(QRegExp("[^a-zA-Z\\d\\s]"));
-        if (this_releasename.toLower() == other_releasename.toLower()) {
+        if (other_releasename.toLower().startsWith(this_releasename.toLower())) {
             return true;
         }
 
@@ -228,7 +232,7 @@ void MainWindow::on_loadButton_clicked()
             memcpy(fsid, buffer + 3, 8);
 
             if (QString(fsid).startsWith("EXFAT")) {
-                int bytes_per_sector, sector_per_cluster;
+                int sector_per_cluster;
                 quint32 bitmap_sector, root_directory_cluster;
 
                 bytes_per_sector = qPow(2, *(quint8 *)(buffer + 0x6C));
@@ -237,7 +241,7 @@ void MainWindow::on_loadButton_clicked()
                 root_directory_cluster = *(quint32 *)(buffer + 0x60);
 
                 quint32 first_cluster = bitmap_sector - (2 * sector_per_cluster);
-                quint32 root_directory_sector = (first_cluster + (root_directory_cluster * sector_per_cluster)) * bytes_per_sector;
+                root_directory_sector = (first_cluster + (root_directory_cluster * sector_per_cluster)) * bytes_per_sector;
 
                 qDebug("Root directory: %08x", root_directory_sector);
 
@@ -326,7 +330,7 @@ void MainWindow::on_loadButton_clicked()
                             qDebug("Created date: %s", created.toString("yyyy-MM-dd HH:mm:ss").toStdString().c_str());
 
                             QTreeWidgetItem *item = new QTreeWidgetItem();
-                            item->setText(0, filename);
+                            item->setText(0, filename.length() > 0 ? filename : "-");
                             item->setData(4, Qt::DisplayRole, filesize);
                             item->setData(5, Qt::DisplayRole, created);
                             item->setData(6, Qt::DisplayRole, last_accessed);
@@ -358,6 +362,10 @@ void MainWindow::on_loadButton_clicked()
                             item->setText(3, fileInfo.suffix().toUpper());
 
                             ui->treeWidget->addTopLevelItem(item);
+
+                            if (deleted) {
+                                item->setHidden(true);
+                            }
 
                             if (!file.seek(next_offset)) {
                                 while (file.pos() < next_offset) {
@@ -411,26 +419,26 @@ void MainWindow::on_saveButton_clicked()
 
         qApp->processEvents();
 
-        quint8 buffer[0x100];
+        quint8 buffer[0x2000];
 
         if (diskin.isOpen() && filein.isOpen()) {
             qDebug("Record Entry: %08x - %08x", first_sector, last_sector);
 
-            if (!diskin.seek(first_sector)) {
-                while (diskin.pos() < first_sector) {
-                    quint8 data[0x20];
-                    diskin.read((char *) data, 0x20);
+            if (!diskin.seek(root_directory_sector)) {
+                while (diskin.pos() < root_directory_sector) {
+                    quint8 data[0x100];
+                    diskin.read((char *) data, 0x100);
                 }
             }
 
-            while (diskin.read((char *) buffer, 0x20)) {
+            while (diskin.read((char *) buffer, 0x100)) {
                 if (progress.wasCanceled()) {
                     filein.resize(0);
 
                     break;
                 }
 
-                filein.write((char *) buffer, 0x20);
+                filein.write((char *) buffer, 0x100);
 
                 if (diskin.pos() >= last_sector) {
                     break;
@@ -448,55 +456,71 @@ void MainWindow::on_saveButton_clicked()
             }
 
             if (filein.isOpen() && fileout.isOpen()) {
-                progress.setMaximum(ui->treeWidget->topLevelItemCount());
-
-                int i = 0;
-                for (; i < ui->treeWidget->topLevelItemCount(); i++) {
+                while (filein.read((char *) buffer, 0x100)) {
                     if (progress.wasCanceled()) {
                         fileout.resize(0);
 
                         break;
                     }
 
-                    progress.setValue(i);
+                    fileout.write((char *) buffer, 0x100);
 
-                    qApp->processEvents();
-
-                    QTreeWidgetItem *item = ui->treeWidget->topLevelItem(i);
-
-                    qint64 rec_offset = item->data(0, Qt::UserRole).toLongLong() - first_sector;
-                    qint64 next_offset = item->data(0, Qt::UserRole + 1).toLongLong() - first_sector;
-
-                    qDebug("Offset: %08x - %08x: %s", rec_offset, next_offset, item->text(0).toStdString().c_str());
-
-                    if (!filein.seek(rec_offset)) {
-                        while (filein.pos() < rec_offset) {
-                            quint8 data[0x20];
-                            filein.read((char *) data, 0x20);
-                        }
+                    if (filein.pos() >= first_sector - root_directory_sector) {
+                        break;
                     }
+                }
 
-                    while (filein.read((char *) buffer, 0x20)) {
+                if (fileout.pos() >= first_sector - root_directory_sector) {
+                    progress.setMaximum(ui->treeWidget->topLevelItemCount());
+
+                    int i = 0;
+                    for (; i < ui->treeWidget->topLevelItemCount(); i++) {
                         if (progress.wasCanceled()) {
                             fileout.resize(0);
 
                             break;
                         }
 
-                        fileout.write((char *) buffer, 0x20);
+                        progress.setValue(i);
 
-                        if (filein.pos() >= next_offset) {
-                            break;
+                        qApp->processEvents();
+
+                        QTreeWidgetItem *item = ui->treeWidget->topLevelItem(i);
+
+                        qint64 rec_offset = item->data(0, Qt::UserRole).toLongLong() - root_directory_sector;
+                        qint64 next_offset = item->data(0, Qt::UserRole + 1).toLongLong() - root_directory_sector;
+
+                        qDebug("Offset: %08x - %08x: %s", rec_offset, next_offset, item->text(0).toStdString().c_str());
+
+                        if (!filein.seek(rec_offset)) {
+                            while (filein.pos() < rec_offset) {
+                                quint8 data[0x20];
+                                filein.read((char *) data, 0x20);
+                            }
+                        }
+
+                        while (filein.read((char *) buffer, 0x20)) {
+                            if (progress.wasCanceled()) {
+                                fileout.resize(0);
+
+                                break;
+                            }
+
+                            fileout.write((char *) buffer, 0x20);
+
+                            if (filein.pos() >= next_offset) {
+                                break;
+                            }
                         }
                     }
-                }
 
-                progress.setValue(i);
+                    progress.setValue(i);
 
-                memset(buffer, 0, sizeof(buffer));
+                    memset(buffer, 0, sizeof(buffer));
 
-                while (fileout.pos() < last_sector - first_sector) {
-                    fileout.write((char *) buffer, 0x20);
+                    while (fileout.pos() % bytes_per_sector > 0) {
+                        fileout.write((char *) buffer, 0x20);
+                    }
                 }
 
                 filein.close();
@@ -513,24 +537,24 @@ void MainWindow::on_saveButton_clicked()
                     progress.setMaximum(0);
                     progress.setValue(0);
 
-                    if (!diskin.seek(first_sector)) {
-                        while (diskin.pos() < first_sector) {
-                            quint8 data[0x20];
-                            diskin.read((char *) data, 0x20);
+                    if (!diskin.seek(root_directory_sector)) {
+                        while (diskin.pos() < root_directory_sector) {
+                            diskin.read((char *) buffer, bytes_per_sector);
                         }
                     }
 
-                    if (diskin.pos() != first_sector) {
+                    if (diskin.pos() != root_directory_sector) {
                         QMessageBox::critical(this, "Error", "File operation error", QMessageBox::Ok);
                     }
                     else {
-                        while (fileout.read((char *) buffer, 0x20)) {
+                        while (fileout.read((char *) buffer, bytes_per_sector)) {
                             if (progress.wasCanceled()) {
                                 break;
                             }
 
-                            if (diskin.write((char *) buffer, 0x20) > -1) {
-                                qDebug("Write to Disk: %08x", diskin.pos());
+                            qint64 ret = diskin.write((char *) buffer, bytes_per_sector);
+                            if (ret > -1) {
+                                qDebug("Write to Disk: (%lld) %08x", ret, diskin.pos() - ret);
                             }
                             else {
                                 qDebug("Write error: (%d) %s", diskin.error(), diskin.errorString().toStdString().c_str());
@@ -540,6 +564,14 @@ void MainWindow::on_saveButton_clicked()
                                 break;
                             }
                         }
+
+                        QClipboard *clipboard = QApplication::clipboard();
+                        clipboard->setText(QString().sprintf("%08x", root_directory_sector));
+
+                        QString message = QString().sprintf("Disk Data Offset %08x - %08x has been dumped to \n%s",
+                                                            root_directory_sector, diskin.pos(), QFileInfo(fileout).absoluteFilePath().replace('/', QDir::separator()).toStdString().c_str());
+
+                        QMessageBox::information(this, "Success", message, QMessageBox::Ok);
                     }
 
                     fileout.close();
@@ -565,8 +597,17 @@ void MainWindow::on_upButton_clicked()
     foreach (QTreeWidgetItem *item, selectedItems) {
         int index = treeWidget->indexOfTopLevelItem(item);
         if (index > 0 && (top < 0 || index > top + 1)) {
-            index--;
-            treeWidget->insertTopLevelItem(index, treeWidget->takeTopLevelItem(index + 1));
+            int swap = 1;
+            while (index - swap > -1 && treeWidget->topLevelItem(index - swap)->isHidden()) {
+                swap++;
+            }
+            index = index - swap;
+            if (index > -1 && (top < 0 || index > top)) {
+                treeWidget->insertTopLevelItem(index, treeWidget->takeTopLevelItem(index + swap));
+            }
+            else {
+                index = treeWidget->indexOfTopLevelItem(item);
+            }
         }
         top = index;
 
@@ -591,8 +632,17 @@ void MainWindow::on_downButton_clicked()
     foreach (QTreeWidgetItem *item, selectedItems) {
         int index = treeWidget->indexOfTopLevelItem(item);
         if (index < size - 1 && (bottom < 0 || index < bottom - 1)) {
-            index++;
-            treeWidget->insertTopLevelItem(index, treeWidget->takeTopLevelItem(index - 1));
+            int swap = 1;
+            while (index + swap < size && treeWidget->topLevelItem(index + swap)->isHidden()) {
+                swap++;
+            }
+            index = index + swap;
+            if (index < size && (bottom < 0 || index < bottom)) {
+                treeWidget->insertTopLevelItem(index, treeWidget->takeTopLevelItem(index - swap));
+            }
+            else {
+                index = treeWidget->indexOfTopLevelItem(item);
+            }
         }
         bottom = index;
 

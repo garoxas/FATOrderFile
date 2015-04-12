@@ -2,3 +2,5 @@ debug/
 release/
 output
 input
+ui_*.h
+*.pro.user
