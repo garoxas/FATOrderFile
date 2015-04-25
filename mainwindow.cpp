@@ -111,11 +111,17 @@ MainWindow::MainWindow(QWidget *parent) :
 #endif
 
     ui->treeWidget->setSelectionMode(QAbstractItemView::ExtendedSelection);
+    ui->treeWidget->setDragDropMode(QAbstractItemView::InternalMove);
+    ui->treeWidget->setDefaultDropAction(Qt::MoveAction);
+    ui->treeWidget->setDropIndicatorShown(true);
+
+    ui->treeWidget->setAlternatingRowColors(true);
+
+    ui->treeWidget->header()->resizeSection(0, 100);
+    ui->treeWidget->header()->resizeSection(1, 200);
+    ui->treeWidget->header()->resizeSection(2, 100);
 
     ui->treeWidget->sortByColumn(-1);
-
-    ui->upButton->setIcon(style()->standardIcon(QStyle::SP_ArrowUp));
-    ui->downButton->setIcon(style()->standardIcon(QStyle::SP_ArrowDown));
 
     QFile file("3dsreleases.xml");
     if (file.open(QIODevice::ReadOnly | QIODevice::Text)) {
@@ -338,28 +344,31 @@ void MainWindow::on_loadButton_clicked()
                             item->setData(0, Qt::UserRole, rec_offset);
                             item->setData(0, Qt::UserRole + 1, next_offset);
 
+                            QFileInfo fileInfo(filename);
+
                             if (deleted) {
                                 item->setForeground(0, QBrush(Qt::red));
                             }
-
-                            QFileInfo fileInfo(filename);
-
-                            release info;
-                            info.name = fileInfo.completeBaseName();
-                            info.filename = fileInfo.completeBaseName();
-                            info.releasename = fileInfo.completeBaseName();
-
-                            int release_id = release_db.key(info, -1);
-                            if (release_id > -1) {
-                                item->setText(1, release_db[release_id].name);
-                                item->setText(2, release_db[release_id].titleid);
-                            }
                             else {
-                                item->setText(1, fileInfo.completeBaseName());
-                                item->setText(2, "-");
+                                release info;
+                                info.name = fileInfo.completeBaseName();
+                                info.filename = fileInfo.completeBaseName();
+                                info.releasename = fileInfo.completeBaseName();
+
+                                int release_id = release_db.key(info, -1);
+                                if (release_id > -1) {
+                                    item->setText(1, release_db[release_id].name);
+                                    item->setText(2, release_db[release_id].titleid);
+                                }
+                                else {
+                                    item->setText(1, fileInfo.completeBaseName());
+                                    item->setText(2, "-");
+                                }
                             }
 
                             item->setText(3, fileInfo.suffix().toUpper());
+
+                            item->setFlags(item->flags() & ~Qt::ItemIsDropEnabled);
 
                             ui->treeWidget->addTopLevelItem(item);
 
@@ -579,73 +588,5 @@ void MainWindow::on_saveButton_clicked()
                 }
             }
         }
-    }
-}
-
-void MainWindow::on_upButton_clicked()
-{
-    QTreeWidget *treeWidget = ui->treeWidget;
-
-    treeWidget->sortByColumn(-1);
-
-    QList<QTreeWidgetItem *> selectedItems = treeWidget->selectedItems();
-    std::sort(selectedItems.begin(), selectedItems.end(), [treeWidget] (QTreeWidgetItem *left, QTreeWidgetItem *right)->bool {
-        return treeWidget->indexOfTopLevelItem(left) < treeWidget->indexOfTopLevelItem(right);
-    });
-
-    int top = -1;
-    foreach (QTreeWidgetItem *item, selectedItems) {
-        int index = treeWidget->indexOfTopLevelItem(item);
-        if (index > 0 && (top < 0 || index > top + 1)) {
-            int swap = 1;
-            while (index - swap > -1 && treeWidget->topLevelItem(index - swap)->isHidden()) {
-                swap++;
-            }
-            index = index - swap;
-            if (index > -1 && (top < 0 || index > top)) {
-                treeWidget->insertTopLevelItem(index, treeWidget->takeTopLevelItem(index + swap));
-            }
-            else {
-                index = treeWidget->indexOfTopLevelItem(item);
-            }
-        }
-        top = index;
-
-        treeWidget->topLevelItem(index)->setSelected(true);
-    }
-}
-
-void MainWindow::on_downButton_clicked()
-{
-    QTreeWidget *treeWidget = ui->treeWidget;
-
-    treeWidget->sortByColumn(-1);
-
-    QList<QTreeWidgetItem *> selectedItems = treeWidget->selectedItems();
-    std::sort(selectedItems.begin(), selectedItems.end(), [treeWidget] (QTreeWidgetItem *left, QTreeWidgetItem *right)->bool {
-        return treeWidget->indexOfTopLevelItem(left) > treeWidget->indexOfTopLevelItem(right);
-    });
-
-    int size = treeWidget->topLevelItemCount();
-
-    int bottom = -1;
-    foreach (QTreeWidgetItem *item, selectedItems) {
-        int index = treeWidget->indexOfTopLevelItem(item);
-        if (index < size - 1 && (bottom < 0 || index < bottom - 1)) {
-            int swap = 1;
-            while (index + swap < size && treeWidget->topLevelItem(index + swap)->isHidden()) {
-                swap++;
-            }
-            index = index + swap;
-            if (index < size && (bottom < 0 || index < bottom)) {
-                treeWidget->insertTopLevelItem(index, treeWidget->takeTopLevelItem(index - swap));
-            }
-            else {
-                index = treeWidget->indexOfTopLevelItem(item);
-            }
-        }
-        bottom = index;
-
-        treeWidget->topLevelItem(index)->setSelected(true);
     }
 }

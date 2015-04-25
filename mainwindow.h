@@ -20,10 +20,6 @@ private slots:
 
     void on_saveButton_clicked();
 
-    void on_upButton_clicked();
-
-    void on_downButton_clicked();
-
 private:
     Ui::MainWindow *ui;
 };
